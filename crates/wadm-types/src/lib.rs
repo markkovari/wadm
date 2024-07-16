@@ -34,7 +34,7 @@ pub const LINK_TRAIT: &str = "link";
 pub const LATEST_VERSION: &str = "latest";
 
 /// An OAM manifest
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, utoipa::ToSchema, JsonSchema)]
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, utoipa::ToSchema, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     /// The OAM version of the manifest
@@ -46,7 +46,36 @@ pub struct Manifest {
     pub metadata: Metadata,
     /// The specification for this manifest
     pub spec: Specification,
+    /// The raw string of the manifest
+    #[serde(skip)]
+    pub raw: Option<String>,
 }
+
+impl<'a, 'de> serde::Deserialize<'de> for Manifest
+where
+    'de: 'a,
+{
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        // TODO: fix to more generic type not jsonvalue
+        let raw: Box<serde_json::value::Value> = Box::deserialize(deserializer)?;
+        let raw = raw.to_string();
+        let manifest: Manifest = serde_json::from_str(&raw).map_err(D::Error::custom)?;
+        Ok(Manifest {
+            raw: Some(raw),
+            ..manifest
+        })
+    }
+}
+
+// impl Serialize for Manifest {
+//     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+//         let mut manifest = self.clone();
+//         manifest.raw = r;
+//         manifest.serialize(serializer);
+//         Ok(manifest)
+//     }
+// }
 
 impl Manifest {
     /// Returns a reference to the current version
@@ -110,6 +139,11 @@ impl Manifest {
             .iter()
             .map(|p| (&p.name, p))
             .collect::<HashMap<&String, &Policy>>()
+    }
+
+    /// Returns the original raw string of the manifest
+    pub fn raw(&self) -> Option<String> {
+        self.raw.clone()
     }
 }
 
@@ -409,6 +443,27 @@ mod test {
     }
 
     #[test]
+    fn test_mafiest_serialization() {
+        let manifest = deserialize_yaml("./oam/simple1.yaml").expect("Should be able to parse");
+        let serialized_json =
+            serde_json::to_vec(&manifest).expect("Should be able to serialize JSON");
+
+        let serialized_yaml = serde_yaml::to_string(&manifest)
+            .expect("Should be able to serialize YAML")
+            .into_bytes();
+
+        // Test the round trip back in
+        let json_manifest: Manifest = serde_json::from_slice(&serialized_json)
+            .expect("Should be able to deserialize JSON roundtrip");
+        let yaml_manifest: Manifest = serde_yaml::from_slice(&serialized_yaml)
+            .expect("Should be able to deserialize YAML roundtrip");
+
+        assert_eq!(manifest, json_manifest, "JSON roundtrip should be equal");
+        assert_eq!(manifest, yaml_manifest, "YAML roundtrip should be equal");
+        assert!(manifest.raw().is_some(), "Raw should be some");
+    }
+
+    #[test]
     #[ignore] // see TODO in TraitProperty enum
     fn test_custom_traits() {
         let manifest = deserialize_yaml("./oam/custom.yaml").expect("Should be able to parse");
@@ -623,6 +678,7 @@ mod test {
 
         let spec = Specification {
             components: component_vec,
+            policies: vec![],
         };
         let metadata = Metadata {
             name: "my-example-app".to_string(),
@@ -643,6 +699,7 @@ mod test {
             kind: APPLICATION_KIND.to_owned(),
             metadata,
             spec,
+            raw: None,
         };
         let serialized_json =
             serde_json::to_vec(&manifest).expect("Should be able to serialize JSON");
